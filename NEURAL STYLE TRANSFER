@@ -1,0 +1,111 @@
+!pip install torch torchvision pillow matplotlib
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import os
+print(os.listdir())
+from google.colab import files
+uploaded = files.upload()
+
+import os
+os.rename("Virat Kohli PC Wallpaper.jpg", "style.jpg")
+from torchvision import models, transforms
+from PIL import Image
+from google.colab import files
+files.upload()
+import matplotlib.pyplot as plt
+
+# Device
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Image loader
+loader = transforms.Compose([
+    transforms.Resize((256, 256)),  # faster
+    transforms.ToTensor()
+])
+
+def load_image(path):
+    image = Image.open(path).convert('RGB')
+    image = loader(image).unsqueeze(0)
+    return image.to(device, torch.float)
+
+# Load images
+
+content = load_image("content.jpg")   # your photo
+style = load_image("style.jpg")       # painting
+# VGG model
+vgg = models.vgg19(pretrained=True).features.to(device).eval()
+
+# Layers
+content_layers = ['21']
+style_layers = ['0', '5', '10', '19', '28']
+
+# Get features
+def get_features(image, model):
+    features = {}
+    x = image
+    for name, layer in model._modules.items():
+        x = layer(x)
+        if name in content_layers:
+            features['content'] = x
+        if name in style_layers:
+            features[name] = x
+    return features
+
+# Gram matrix
+def gram_matrix(tensor):
+    b, c, h, w = tensor.size()
+    tensor = tensor.view(c, h*w)
+    gram = torch.mm(tensor, tensor.t())
+    return gram
+
+# Extract features
+content_features = {k: v.detach() for k, v in get_features(content, vgg).items()}
+style_features = get_features(style, vgg)
+
+# Style gram matrices
+style_grams = {layer: gram_matrix(style_features[layer]).detach() for layer in style_features}
+# Target image
+target = content.clone().detach().requires_grad_(True).to(device)
+
+# Optimizer
+optimizer = optim.Adam([target], lr=0.003)
+
+# Weights
+style_weight = 1e6
+content_weight = 1
+
+# Training loop
+for i in range(60):   
+    target_features = get_features(target, vgg)
+
+    content_loss = torch.mean((target_features['content'] - content_features['content'])**2)
+
+    style_loss = 0
+    for layer in style_grams:
+        target_feature = target_features[layer]
+        target_gram = gram_matrix(target_feature)
+        style_gram = style_grams[layer]
+
+        _, c, h, w = target_feature.shape
+        style_loss += torch.mean((target_gram - style_gram)**2) / (c*h*w)
+
+    total_loss = content_weight * content_loss + style_weight * style_loss
+
+    optimizer.zero_grad()
+    total_loss.backward()
+    optimizer.step()
+
+    if i % 10 == 0:
+        print(f"Step {i}, Loss: {total_loss.item()}")
+
+# Show result
+def imshow(tensor):
+    image = tensor.cpu().clone().detach()
+    image = image.squeeze(0)
+    image = transforms.ToPILImage()(image)
+    plt.imshow(image)
+    plt.axis('off')
+
+imshow(target)
+plt.show()
